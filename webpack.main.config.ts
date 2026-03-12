@@ -30,5 +30,5 @@ plugins.push(
         noErrorOnMissing: true,
       },
     ],
-  })
+  }),
 );

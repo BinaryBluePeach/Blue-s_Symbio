@@ -1,23 +1,33 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 import hark from "hark";
 import WaveSurfer from "wavesurfer.js";
 import RecordPlugin from "wavesurfer.js/dist/plugins/record.js";
 import Scene from "../Scene";
 
+function getMessageText(message: {
+  parts?: Array<{ type: string; text?: string }>;
+}): string {
+  return (
+    message.parts
+      ?.filter((p) => p.type === "text")
+      .map((p) => p.text ?? "")
+      .join("") ?? ""
+  );
+}
+
 const Overlay = () => {
-  const [voiceUrl, setVoiceUrl] = useState<string>("");
-  const [recentResponse, setRecentResponse] = useState<string>("");
-  const [isLalaSpeaking, setIsLalaSpeaking] = useState<boolean>(false);
-  const [isHotMicActive, setIsHotMicActive] = useState<boolean>(false);
+  const [voiceUrl, setVoiceUrl] = useState("");
+  const [recentResponse, setRecentResponse] = useState("");
+  const [isLalaSpeaking, setIsLalaSpeaking] = useState(false);
+  const [isHotMicActive, setIsHotMicActive] = useState(false);
 
   const getVoiceAudio = useCallback(async (text: string) => {
     try {
       const voiceResp = await fetch("https://lalaland.chat/api/voice", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text,
           voiceId: "zrHiDhphv9ZnVXBqCLjz",
@@ -27,52 +37,61 @@ const Overlay = () => {
 
       if (voiceResp.ok) {
         const voiceBlob = await voiceResp.blob();
-        const voiceUrl = URL.createObjectURL(voiceBlob);
-        return voiceUrl;
+        return URL.createObjectURL(voiceBlob);
       } else {
-        console.log("Voice response error", voiceResp);
+        console.error("Voice response error", voiceResp.status);
       }
     } catch (error) {
       console.error(error);
     }
   }, []);
 
-  const { append } = useChat({
-    api: "http://localhost:3001/api/chat",
-    onFinish: async (data) => {
-      console.log(data);
-      setVoiceUrl(await getVoiceAudio(data.content));
-      setRecentResponse(data.content);
+  const { sendMessage } = useChat({
+    transport: new DefaultChatTransport({
+      api: "http://localhost:3001/api/chat",
+    }),
+    onFinish: async ({ message }) => {
+      const text = getMessageText(message);
+      const audioUrl = await getVoiceAudio(text);
+      if (audioUrl) setVoiceUrl(audioUrl);
+      setRecentResponse(text);
     },
   });
 
   useEffect(() => {
-    (window as any).electronAPI.generateText(
-      "Your name is Lala. You are a cute, smart, Anime girl AI companion inside the user's computer. Like Cortana from Halo. Greet the user on first message. Tell jokes, teach them, or just hangout. Keep it under 500 characters. Do not use emoijis and do not bracket your response with quotes."
+    window.electronAPI.generateText(
+      "Your name is Lala. You are a cute, smart, Anime girl AI companion inside the user's computer. Like Cortana from Halo. Greet the user on first message. Tell jokes, teach them, or just hangout. Keep it under 500 characters. Do not use emojis and do not bracket your response with quotes.",
     );
 
-    (window as any).electronAPI?.onGeneratedText((text: string) => {
+    const cleanupText = window.electronAPI.onGeneratedText((text: string) => {
       setRecentResponse(text);
     });
+
+    return () => cleanupText?.();
   }, []);
 
   useEffect(() => {
-    (window as any).electronAPI?.onHotMicToggled((isActive: boolean) => {
-      setIsHotMicActive(isActive);
+    const cleanupHotMic = window.electronAPI.onHotMicToggled(
+      (isActive: boolean) => {
+        setIsHotMicActive(isActive);
+      },
+    );
+
+    const cleanupPrompt = window.electronAPI.onPromptSent((prompt: string) => {
+      window.electronAPI.generateText(prompt);
     });
 
-    (window as any).electronAPI?.onPromptSent((prompt: string) => {
-      console.log("prompt", prompt);
-      (window as any).electronAPI.generateText(prompt);
-    });
+    return () => {
+      cleanupHotMic?.();
+      cleanupPrompt?.();
+    };
   }, []);
 
-  // whisper chunking magic here
   useEffect(() => {
-    let stream: MediaStream = null;
-    let speechEvents: hark.Harker = null;
-    let wavesurfer: WaveSurfer = null;
-    let recorder: RecordPlugin = null;
+    let stream: MediaStream | null = null;
+    let speechEvents: hark.Harker | null = null;
+    let wavesurfer: WaveSurfer | null = null;
+    let recorder: RecordPlugin | null = null;
     let isUserSpeaking = false;
     let isLoading = false;
 
@@ -89,56 +108,45 @@ const Overlay = () => {
         RecordPlugin.create({
           scrollingWaveform: true,
           renderRecordedAudio: false,
-        })
+        }),
       );
 
       speechEvents.on("speaking", () => {
         if (isLalaSpeaking || isLoading) return;
         isUserSpeaking = true;
-        recorder.startRecording();
-        console.log("Started speaking");
+        recorder?.startRecording();
       });
 
       speechEvents.on("stopped_speaking", () => {
         if (isLalaSpeaking) return;
         isLoading = true;
-        recorder.stopRecording();
+        recorder?.stopRecording();
         isUserSpeaking = false;
-        console.log("Stopped speaking");
       });
 
-      recorder.on("record-end", async (blob) => {
-        console.log("recording stopped");
+      recorder.on("record-end", async (blob: Blob) => {
         const formData = new FormData();
-
-        const file = new File([blob], "voice.wav", {
-          type: "audio/wav",
-        });
-
-        console.log(file);
-
+        const file = new File([blob], "voice.wav", { type: "audio/wav" });
         formData.append("file", file);
 
-        const whisperResp = await fetch(
-          "https://lalaland.chat/api/magic/whisper",
-          {
-            method: "POST",
-            body: formData,
-          }
-        );
+        try {
+          const whisperResp = await fetch(
+            "https://lalaland.chat/api/magic/whisper",
+            { method: "POST", body: formData },
+          );
 
-        if (whisperResp.ok) {
-          const whisperText = await whisperResp.json();
-          console.log(whisperText);
-          await append({
-            role: "user",
-            content: whisperText,
-          });
-          setTimeout(() => {
+          if (whisperResp.ok) {
+            const whisperText = await whisperResp.json();
+            await sendMessage({ text: whisperText });
+            setTimeout(() => {
+              isLoading = false;
+            }, 5000);
+          } else {
+            console.error("Whisper error", whisperResp.status);
             isLoading = false;
-          }, 5000);
-        } else {
-          console.log("error whispering", whisperResp);
+          }
+        } catch (e) {
+          console.error(e);
           isLoading = false;
         }
       });
@@ -156,15 +164,10 @@ const Overlay = () => {
       isUserSpeaking = false;
       isLoading = false;
     };
-  }, [isLalaSpeaking, isHotMicActive]);
+  }, [isLalaSpeaking, isHotMicActive, sendMessage]);
 
   return (
-    <div
-      style={{
-        height: "100%",
-        width: "100%",
-      }}
-    >
+    <div style={{ height: "100%", width: "100%" }}>
       <Scene
         virtualText={recentResponse}
         voiceUrl={voiceUrl}
@@ -176,8 +179,6 @@ const Overlay = () => {
   );
 };
 
-const OverlayLayout = () => {
-  return <Overlay />;
-};
+const OverlayLayout = () => <Overlay />;
 
 export default OverlayLayout;

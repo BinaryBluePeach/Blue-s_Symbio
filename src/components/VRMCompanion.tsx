@@ -1,5 +1,5 @@
-import React, {
-  RefObject,
+import {
+  type RefObject,
   Suspense,
   forwardRef,
   useCallback,
@@ -47,8 +47,8 @@ export const emotions = {
 };
 
 interface VrmAvatarProps {
-  meshRef?: RefObject<any>;
-  physicsRef?: RefObject<any>;
+  meshRef?: RefObject<Mesh | null>;
+  physicsRef?: RefObject<RapierRigidBody | null>;
   vrmUrl: string;
   animations: Record<"greet" | "idle" | "talk" | "bored" | "walk", string[]>;
   scale: number[];
@@ -73,14 +73,14 @@ const VrmCompanion = forwardRef(
       isStaticPosition,
       gltfLoaded,
     }: VrmAvatarProps,
-    ref
+    ref,
   ) => {
     const [gltf, setGltf] = useState<GLTF | null>(null);
     const [animationMixer, setAnimationMixer] = useState<AnimationMixer | null>(
-      null
+      null,
     );
     const [prevVrmUrl, setPrevVrmUrl] = useState<string | null>(null);
-    const [currentText, setCurrentText] = useState<string>("");
+    const [currentText, setCurrentText] = useState("");
 
     const [targetPosition, setTargetPosition] = useState(position);
     const [targetLookAt, setTargetLookAt] = useState<number[] | null>(null);
@@ -94,9 +94,7 @@ const VrmCompanion = forwardRef(
     const loader = useMemo(() => {
       return new GLTFLoader().register(
         (parser: GLTFParser) =>
-          new VRMLoaderPlugin(parser, {
-            autoUpdateHumanBones: true,
-          })
+          new VRMLoaderPlugin(parser, { autoUpdateHumanBones: true }),
       );
     }, []);
 
@@ -104,48 +102,44 @@ const VrmCompanion = forwardRef(
     const gltfRef = useRef<Mesh>(null);
     const vrmRef = useRef<VRM>(null);
     const virtualTextRef = useRef<Mesh>(null);
+    const mouthAnimFrameRef = useRef<number | null>(null);
 
-    // bind refs to props for external access
     useEffect(() => {
       if (meshRef) {
-        meshRef.current = gltfRef.current;
+        (meshRef as { current: Mesh | null }).current = gltfRef.current;
       }
       if (physicsRef) {
-        physicsRef.current = rigidBodyRef.current;
+        (physicsRef as { current: RapierRigidBody | null }).current =
+          rigidBodyRef.current;
       }
     }, [meshRef, physicsRef]);
 
     useFrame(({ camera }, delta) => {
-      if (animationMixer?.update) {
-        animationMixer.update(delta);
-      }
-      if (vrmRef?.current?.update) {
-        vrmRef.current.update(delta);
-      }
+      animationMixer?.update(delta);
+      vrmRef.current?.update(delta);
 
       if (virtualTextRef.current && gltfRef.current) {
         const avatarPosition = new Vector3().setFromMatrixPosition(
-          gltfRef.current.matrixWorld
+          gltfRef.current.matrixWorld,
         );
         virtualTextRef.current.position.copy(avatarPosition);
         virtualTextRef.current.position.y += 1.5;
         virtualTextRef.current.lookAt(camera.position);
       }
 
-      if (gltfRef?.current?.matrixWorld && !isStaticPosition) {
+      if (gltfRef.current?.matrixWorld && !isStaticPosition && targetPosition) {
         const currentPosition = new Vector3().setFromMatrixPosition(
-          gltfRef.current.matrixWorld
+          gltfRef.current.matrixWorld,
         );
-
         const distance = currentPosition.distanceTo(
-          new Vector3(...targetPosition)
+          new Vector3(...targetPosition),
         );
-
-        if (gltfRef.current && distance > 0.1) {
+        if (distance > 0.1) {
           gltfRef.current.position.lerp(new Vector3(...targetPosition), 0.01);
         }
       }
-      if (gltfRef?.current?.lookAt && targetLookAt && !isStaticPosition) {
+
+      if (gltfRef.current && targetLookAt && !isStaticPosition) {
         gltfRef.current.lookAt(new Vector3(...targetLookAt));
         gltfRef.current.rotateY(Math.PI);
       }
@@ -153,120 +147,126 @@ const VrmCompanion = forwardRef(
 
     const getRandomAnimation = useCallback(
       (type: string) => {
-        const randomAnim = (animations as any)?.[type]?.[
-          Math.floor(Math.random() * (animations as any)?.[type]?.length)
-        ];
-
-        return randomAnim;
+        const anims = (animations as Record<string, string[]>)[type];
+        if (!anims?.length) return undefined;
+        return anims[Math.floor(Math.random() * anims.length)];
       },
-      [animations]
+      [animations],
     );
 
     const playAnimation = useCallback(
       async (type: string) => {
-        animationCache[type][0].reset().setLoop(LoopOnce, 1).play();
+        animationCache[type]?.[0]?.reset().setLoop(LoopOnce, 1).play();
       },
-      [animationCache]
+      [animationCache],
     );
 
     const moveMouth = useCallback(
       async (audioUrl: string) => {
         try {
+          if (!audioContext || !analyser || !vrmRef.current) return;
+
           const audioResp = await fetch(audioUrl);
           const audioBuffer = await audioResp.arrayBuffer();
-          const source = audioContext?.createBufferSource();
-          const audio = await audioContext?.decodeAudioData(audioBuffer);
-          source.buffer = audio;
-          source?.connect(analyser);
+          const source = audioContext.createBufferSource();
+          const decodedAudio = await audioContext.decodeAudioData(audioBuffer);
+          source.buffer = decodedAudio;
+          source.connect(analyser);
           source.start(0);
 
           const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
           const updateMouth = () => {
-            requestAnimationFrame(updateMouth);
+            mouthAnimFrameRef.current = requestAnimationFrame(updateMouth);
 
             analyser.getByteFrequencyData(dataArray);
 
-            const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
-            const normalizationFactor = 50;
-            const normalizedVolume = Math.min(1, volume / normalizationFactor);
+            const volume =
+              dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+            const normalizedVolume = Math.min(1, volume / 50);
 
-            // Set the weight of the 'Aa' blend shape based on the volume
-            vrmRef.current.expressionManager.setValue("aa", normalizedVolume);
-            vrmRef.current.expressionManager.update();
+            vrmRef.current?.expressionManager?.setValue("aa", normalizedVolume);
+            vrmRef.current?.expressionManager?.update();
           };
 
+          if (mouthAnimFrameRef.current) {
+            cancelAnimationFrame(mouthAnimFrameRef.current);
+          }
           updateMouth();
+
+          source.onended = () => {
+            if (mouthAnimFrameRef.current) {
+              cancelAnimationFrame(mouthAnimFrameRef.current);
+              mouthAnimFrameRef.current = null;
+            }
+            vrmRef.current?.expressionManager?.setValue("aa", 0);
+            vrmRef.current?.expressionManager?.update();
+          };
         } catch (error) {
           console.error(error);
         }
       },
-      [audioContext, analyser]
+      [audioContext, analyser],
     );
 
-    const setupAudioAnalyser = useCallback(async () => {
-      const audioContext = new (window.AudioContext ||
-        (window as any).webkitAudioContext)();
-      setAudioContext(audioContext);
-
-      const analyser = audioContext?.createAnalyser();
-      setAnalyser(analyser);
+    const setupAudioAnalyser = useCallback(() => {
+      const ctx = new AudioContext();
+      setAudioContext(ctx);
+      setAnalyser(ctx.createAnalyser());
     }, []);
 
-    const setupAudioPlayer = useCallback(async () => {
-      const audio = new Audio();
-      setAudio(audio);
+    const setupAudioPlayer = useCallback(() => {
+      setAudio(new Audio());
     }, []);
 
     const setupAnimations = useCallback(async () => {
-      return new Promise(async (resolve) => {
-        const mixer = new AnimationMixer(vrmRef.current.scene);
-        mixer.timeScale = 1.0;
-        setAnimationMixer(mixer);
+      if (!vrmRef.current) return;
 
-        // load walk animation
-        const randomWalk = getRandomAnimation("walk");
-        const walkClip = await loadMixamoAnimation(randomWalk, vrmRef.current);
-        const walkAction = mixer.clipAction(walkClip);
+      const mixer = new AnimationMixer(vrmRef.current.scene);
+      mixer.timeScale = 1.0;
+      setAnimationMixer(mixer);
 
-        // // load idle animation
-        const randomIdle = getRandomAnimation("idle");
-        const idleClip = await loadMixamoAnimation(randomIdle, vrmRef.current);
-        const idleAction = mixer.clipAction(idleClip);
+      const randomWalk = getRandomAnimation("walk");
+      const randomIdle = getRandomAnimation("idle");
 
-        setAnimationCache((prev) => ({
-          ...prev,
-          walk: [...(prev?.walk || []), walkAction],
-          idle: [...(prev?.idle || []), idleAction],
-        }));
+      const [walkClip, idleClip] = await Promise.all([
+        randomWalk
+          ? loadMixamoAnimation(randomWalk, vrmRef.current)
+          : Promise.resolve(null),
+        randomIdle
+          ? loadMixamoAnimation(randomIdle, vrmRef.current)
+          : Promise.resolve(null),
+      ]);
 
-        idleAction.play();
+      const walkAction = walkClip ? mixer.clipAction(walkClip) : null;
+      const idleAction = idleClip ? mixer.clipAction(idleClip) : null;
 
-        // blink loop
-        const blinkTrack =
-          vrmRef.current.expressionManager.getExpressionTrackName("blink");
+      setAnimationCache((prev) => ({
+        ...prev,
+        ...(walkAction ? { walk: [...(prev?.walk || []), walkAction] } : {}),
+        ...(idleAction ? { idle: [...(prev?.idle || []), idleAction] } : {}),
+      }));
+
+      idleAction?.play();
+
+      const blinkTrack =
+        vrmRef.current.expressionManager?.getExpressionTrackName("blink");
+      if (blinkTrack) {
         const blinkKeys = new NumberKeyframeTrack(
-          blinkTrack as string,
-          [0.0, 0.2, 0.4, 6.0], // times
-          [0.0, 1.0, 0.0, 0.0] // values
+          blinkTrack,
+          [0.0, 0.2, 0.4, 6.0],
+          [0.0, 1.0, 0.0, 0.0],
         );
-        const blinkClip = new AnimationClip(
-          blinkTrack as string,
-          6.8, // duration
-          [blinkKeys]
-        );
-        const action = mixer.clipAction(blinkClip);
-        action.play();
-        resolve(mixer);
-      });
+        const blinkClip = new AnimationClip(blinkTrack, 6.8, [blinkKeys]);
+        mixer.clipAction(blinkClip).play();
+      }
     }, [getRandomAnimation]);
 
-    // load vrm and play greet animation
     useEffect(() => {
       if ((!gltf && vrmUrl) || prevVrmUrl !== vrmUrl) {
-        loader.loadAsync(vrmUrl).then(async (gltf: GLTF) => {
+        loader.loadAsync(vrmUrl).then(async (loadedGltf: GLTF) => {
           setPrevVrmUrl(vrmUrl);
-          const vrm = gltf.userData.vrm as VRM;
+          const vrm = loadedGltf.userData.vrm as VRM;
           VRMUtils.combineSkeletons(vrm.scene);
           VRMUtils.removeUnnecessaryVertices(vrm.scene);
 
@@ -276,17 +276,15 @@ const VrmCompanion = forwardRef(
 
           const vrmScale = scale[0];
 
-          if (scale[0]) {
-            vrm.scene.scale.setScalar(scale[0]);
+          if (vrmScale) {
+            vrm.scene.scale.setScalar(vrmScale);
 
-            // scale joints
-            for (const joint of vrm.springBoneManager.joints) {
+            for (const joint of vrm.springBoneManager?.joints ?? []) {
               joint.settings.stiffness *= vrmScale;
               joint.settings.hitRadius *= vrmScale;
             }
 
-            // scale colliders
-            for (const collider of vrm.springBoneManager.colliders) {
+            for (const collider of vrm.springBoneManager?.colliders ?? []) {
               const shape = collider.shape;
               if (shape instanceof VRMSpringBoneColliderShapeCapsule) {
                 shape.radius *= vrmScale;
@@ -297,15 +295,13 @@ const VrmCompanion = forwardRef(
             }
           }
 
-          setGltf(gltf);
-
+          setGltf(loadedGltf);
           vrmRef.current = vrm;
-
-          gltfLoaded?.(gltf);
+          gltfLoaded?.(loadedGltf);
 
           await setupAnimations();
-          await setupAudioAnalyser();
-          await setupAudioPlayer();
+          setupAudioAnalyser();
+          setupAudioPlayer();
         });
       }
     }, [
@@ -314,9 +310,7 @@ const VrmCompanion = forwardRef(
       gltf,
       loader,
       prevVrmUrl,
-      getRandomAnimation,
       gltfLoaded,
-      playAnimation,
       setupAnimations,
       setupAudioAnalyser,
       setupAudioPlayer,
@@ -326,98 +320,128 @@ const VrmCompanion = forwardRef(
       setText: (text: string) => {
         setCurrentText(text);
       },
-      moveTo: async (position: number[]) => {
+
+      moveTo: async (pos: number[]) => {
         await playAnimation("walk");
-        setTargetPosition(position);
+        setTargetPosition(pos);
       },
-      lookAt: (position: number[]) => {
-        setTargetLookAt(position);
+
+      lookAt: (pos: number[]) => {
+        setTargetLookAt(pos);
       },
+
       getPosition: () => {
+        if (!gltfRef.current) return new Vector3();
         return new Vector3().setFromMatrixPosition(gltfRef.current.matrixWorld);
       },
-      talk: async (audioUrl: string, targetLookAt?: number[]) =>
-        new Promise(async (resolve) => {
-          const randomTalk = getRandomAnimation("talk");
-          const talkClip = await loadMixamoAnimation(
-            randomTalk,
-            vrmRef.current
-          );
-          const talkAction = animationMixer?.clipAction(talkClip);
-          talkAction?.reset().setLoop(LoopOnce, 1).fadeIn(1).play();
 
-          setTimeout(() => {
-            talkAction?.fadeOut(1);
-          }, (talkClip.duration - 1) * 1000);
-
-          await moveMouth(audioUrl);
-
-          if (targetLookAt) {
-            setTargetLookAt(targetLookAt);
-          }
-
-          audio.src = audioUrl;
-          audio.play();
-
-          audio.addEventListener("ended", () => {
-            if (talkAction.isRunning()) {
-              talkAction.fadeOut(1);
+      talk: async (audioUrl: string, lookTarget?: number[]) =>
+        new Promise<string>((resolve) => {
+          (async () => {
+            const randomTalk = getRandomAnimation("talk");
+            if (!randomTalk || !vrmRef.current) {
+              resolve("no-animation");
+              return;
             }
-            resolve("ended");
-          });
+
+            const talkClip = await loadMixamoAnimation(
+              randomTalk,
+              vrmRef.current,
+            );
+            const talkAction = animationMixer?.clipAction(talkClip);
+            talkAction?.reset().setLoop(LoopOnce, 1).fadeIn(1).play();
+
+            setTimeout(
+              () => {
+                talkAction?.fadeOut(1);
+              },
+              (talkClip.duration - 1) * 1000,
+            );
+
+            await moveMouth(audioUrl);
+
+            if (lookTarget) {
+              setTargetLookAt(lookTarget);
+            }
+
+            if (audio) {
+              audio.src = audioUrl;
+              audio.play();
+              audio.addEventListener(
+                "ended",
+                () => {
+                  if (talkAction?.isRunning()) {
+                    talkAction.fadeOut(1);
+                  }
+                  resolve("ended");
+                },
+                { once: true },
+              );
+            } else {
+              resolve("no-audio");
+            }
+          })();
         }),
+
       playEmotion: async (emotion: string) => {
-        // facial emotion
         const expressionManager = vrmRef.current?.expressionManager;
 
         if (expressionManager) {
-          const transitionSpeed = 0.1; // Adjust this value to change the speed of the transition
-          const updateFrequency = 75; // Adjust this value to change the frequency of the updates
+          const transitionSpeed = 0.1;
+          const updateFrequency = 75;
 
-          // Transition into the emotion
           const transitionInInterval = setInterval(() => {
-            const currentValue = expressionManager.getValue(emotion);
+            const currentValue = expressionManager.getValue(emotion) ?? 0;
             if (currentValue >= 1) {
               clearInterval(transitionInInterval);
             } else {
               expressionManager.setValue(
                 emotion,
-                currentValue + transitionSpeed
+                currentValue + transitionSpeed,
               );
               expressionManager.update();
             }
           }, updateFrequency);
 
-          // Wait for 2-3 seconds, then transition out of the emotion
-          setTimeout(() => {
-            const transitionOutInterval = setInterval(() => {
-              const currentValue = expressionManager.getValue(emotion);
-              if (currentValue <= 0) {
-                clearInterval(transitionOutInterval);
-              } else {
-                expressionManager.setValue(
-                  emotion,
-                  currentValue - transitionSpeed
-                );
-                expressionManager.update();
-              }
-            }, updateFrequency);
-          }, 2000 + Math.random() * 1000); // Wait for a random time between 2 and 3 seconds
+          setTimeout(
+            () => {
+              const transitionOutInterval = setInterval(() => {
+                const currentValue = expressionManager.getValue(emotion) ?? 0;
+                if (currentValue <= 0) {
+                  clearInterval(transitionOutInterval);
+                } else {
+                  expressionManager.setValue(
+                    emotion,
+                    currentValue - transitionSpeed,
+                  );
+                  expressionManager.update();
+                }
+              }, updateFrequency);
+            },
+            2000 + Math.random() * 1000,
+          );
         }
 
-        // body emotion
-        if (emotion === "happy" || emotion === "angry" || emotion === "sad") {
+        if (
+          (emotion === "happy" || emotion === "angry" || emotion === "sad") &&
+          vrmRef.current
+        ) {
           const randomEmotion = getRandomAnimation(emotion);
+          if (!randomEmotion) return;
+
           const emotionClip = await loadMixamoAnimation(
             randomEmotion,
-            vrmRef.current
+            vrmRef.current,
           );
           const emotionAction = animationMixer?.clipAction(emotionClip);
           emotionAction?.reset().setLoop(LoopOnce, 1).fadeIn(1).play();
 
-          setTimeout(() => {
-            emotionAction?.fadeOut(1);
-          }, (emotionClip.duration - 1) * 1000);
+          setTimeout(
+            () => {
+              emotionAction?.fadeOut(1);
+            },
+            (emotionClip.duration - 1) * 1000,
+          );
         }
       },
     }));
@@ -430,10 +454,10 @@ const VrmCompanion = forwardRef(
               <group>
                 <Text
                   color="white"
-                  anchorX={"center"}
+                  anchorX="center"
                   anchorY={-0.4}
                   fontSize={0.05}
-                  outlineColor={"black"}
+                  outlineColor="black"
                   outlineWidth={0.004}
                   maxWidth={1}
                   ref={virtualTextRef}
@@ -448,7 +472,9 @@ const VrmCompanion = forwardRef(
                   }
                   rotation={
                     rotation
-                      ? new Euler().fromArray(rotation as any)
+                      ? (new Euler().fromArray(
+                          rotation as [number, number, number],
+                        ) as unknown as [number, number, number])
                       : undefined
                   }
                   restitution={0.1}
@@ -466,10 +492,10 @@ const VrmCompanion = forwardRef(
               <group>
                 <Text
                   color="white"
-                  anchorX={"center"}
+                  anchorX="center"
                   anchorY={-0.4}
                   fontSize={0.05}
-                  outlineColor={"black"}
+                  outlineColor="black"
                   outlineWidth={0.004}
                   maxWidth={1}
                   ref={virtualTextRef}
@@ -491,7 +517,9 @@ const VrmCompanion = forwardRef(
         )}
       </>
     );
-  }
+  },
 );
+
+VrmCompanion.displayName = "VrmCompanion";
 
 export default VrmCompanion;

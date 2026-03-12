@@ -11,8 +11,9 @@ import {
   ThemeProvider,
   Typography,
 } from "@mui/material";
-import React, { FormEvent, useCallback, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useState } from "react";
 import { theme } from "./theme";
+import lalalandLogo from "../assets/images/lalaland.png";
 import CssBaseline from "@mui/material/CssBaseline";
 import TabUnselectedIcon from "@mui/icons-material/TabUnselected";
 import WebAssetOffIcon from "@mui/icons-material/WebAssetOff";
@@ -21,47 +22,43 @@ import SendIcon from "@mui/icons-material/Send";
 const App = () => {
   const [isOverlayOpen, setIsOverlayOpen] = useState(false);
   const [isOverlayFrameActive, setIsOverlayFrameActive] = useState(false);
-  const [prompt, setPrompt] = useState<string>("");
-  const [isHotMicActive, setIsHotMicActive] = useState<boolean>(false);
+  const [prompt, setPrompt] = useState("");
+  const [isHotMicActive, setIsHotMicActive] = useState(false);
 
   const onOpenOverlay = useCallback(() => {
-    (window as any).electronAPI.openOverlay();
+    window.electronAPI.openOverlay();
     setIsOverlayOpen(true);
   }, []);
 
   const onCloseOverlay = useCallback(() => {
-    (window as any).electronAPI.closeOverlay();
+    window.electronAPI.closeOverlay();
     setIsOverlayOpen(false);
   }, []);
 
   const onPromptSubmit = useCallback(
-    (e: React.FormEvent<HTMLFormElement>) => {
+    (e: FormEvent<HTMLFormElement>) => {
       e.preventDefault();
-      console.log("prompt", prompt);
-      (window as any).electronAPI.sendPrompt(prompt);
+      window.electronAPI.sendPrompt(prompt);
       setPrompt("");
     },
-    [prompt]
+    [prompt],
   );
 
   const onToggleHotMic = useCallback(() => {
     setIsHotMicActive(!isHotMicActive);
-    (window as any).electronAPI.setHotMic(!isHotMicActive);
+    window.electronAPI.setHotMic(!isHotMicActive);
   }, [isHotMicActive]);
 
-  const onPromptChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setPrompt(e.target.value);
-      (window as any).electronAPI.setPrompt(e.target.value);
-    },
-    []
-  );
+  const onPromptChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    setPrompt(e.target.value);
+    window.electronAPI.setPrompt(e.target.value);
+  }, []);
 
   return (
     <Container maxWidth="md" sx={{ p: 1 }}>
       <Stack alignItems="center" my={2}>
         <img
-          src="./assets/images/lalaland.png"
+          src={lalalandLogo}
           alt="Lala"
           style={{
             width: "50%",
@@ -94,11 +91,11 @@ const App = () => {
               onClick={
                 isOverlayFrameActive
                   ? () => {
-                      (window as any).electronAPI.closeOverlayFrame();
+                      window.electronAPI.closeOverlayFrame();
                       setIsOverlayFrameActive(false);
                     }
                   : () => {
-                      (window as any).electronAPI.openOverlayFrame();
+                      window.electronAPI.openOverlayFrame();
                       setIsOverlayFrameActive(true);
                     }
               }
@@ -137,7 +134,7 @@ const App = () => {
 
             <FormControlLabel
               control={
-                <Switch value={isHotMicActive} onChange={onToggleHotMic} />
+                <Switch checked={isHotMicActive} onChange={onToggleHotMic} />
               }
               label="Always on microphone"
             />

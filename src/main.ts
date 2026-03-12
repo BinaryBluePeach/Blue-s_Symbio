@@ -7,26 +7,28 @@ import {
   session,
   desktopCapturer,
 } from "electron";
-import { writeFile } from "fs";
+import { writeFile } from "fs/promises";
 import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
+import { updateElectronApp } from "update-electron-app";
 import dotenv from "dotenv";
 
 dotenv.config();
+updateElectronApp();
 
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (require("electron-squirrel-startup")) {
   app.quit();
 }
 
-let overlayWindow: BrowserWindow = null;
-let mainWindow: BrowserWindow = null;
+let overlayWindow: BrowserWindow | null = null;
+let mainWindow: BrowserWindow | null = null;
 let currentPrompt = "";
 
 const createMainWindow = () => {
   mainWindow = new BrowserWindow({
     webPreferences: {
       preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
+      sandbox: false,
     },
   });
 
@@ -40,11 +42,12 @@ const createMainWindow = () => {
 const createOverlayWindow = (
   withFrame: boolean,
   width: number,
-  height: number
+  height: number,
 ) => {
   overlayWindow = new BrowserWindow({
     webPreferences: {
       preload: OVERLAY_WINDOW_PRELOAD_WEBPACK_ENTRY,
+      sandbox: false,
     },
     height: 800,
     width: 500,
@@ -68,6 +71,7 @@ app.on("ready", () => {
   const { width, height } = display.bounds;
 
   createMainWindow();
+
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const csp =
       "default-src 'self' 'unsafe-eval' 'unsafe-inline' https://lalaland.chat https://fonts.gstatic.com https://cdn.jsdelivr.net file: data: blob: filesystem:; " +
@@ -111,19 +115,15 @@ app.on("ready", () => {
     createOverlayWindow(false, width, height);
   });
 
-  ipcMain.on("send-prompt", (event, prompt: string) => {
+  ipcMain.on("send-prompt", (_event, prompt: string) => {
     overlayWindow?.webContents.send("prompt-sent", prompt);
   });
 
-  ipcMain.on("set-prompt", (event, prompt: string) => {
+  ipcMain.on("set-prompt", (_event, prompt: string) => {
     currentPrompt = prompt;
   });
 
-  ipcMain.on("set-hotmic", (event, isActive: boolean) => {
-    overlayWindow?.webContents.send("hotmic-toggled", isActive);
-  });
-
-  ipcMain.on("set-hotmic", (event, isActive: boolean) => {
+  ipcMain.on("set-hotmic", (_event, isActive: boolean) => {
     overlayWindow?.webContents.send("hotmic-toggled", isActive);
   });
 
@@ -131,10 +131,7 @@ app.on("ready", () => {
     try {
       const sources = await desktopCapturer.getSources({
         types: ["screen"],
-        thumbnailSize: {
-          width,
-          height,
-        },
+        thumbnailSize: { width, height },
       });
 
       const png = sources[0].thumbnail.toPNG();
@@ -147,52 +144,35 @@ app.on("ready", () => {
         prompt: currentPrompt,
       });
 
-      writeFile("screenshot.png", png, (err) => {
-        if (err) {
-          return console.log(err);
-        }
-        console.log("The file was saved!");
-      });
+      await writeFile("screenshot.png", png).catch(console.error);
     } catch (e) {
       console.error(e);
     }
   });
 
-  const messages: {
-    role: "user" | "assistant";
-    content: string;
-  }[] = [];
+  const messages: { role: "user" | "assistant"; content: string }[] = [];
 
-  ipcMain.on("generate-text", async (event, prompt: string) => {
+  ipcMain.on("generate-text", async (_event, prompt: string) => {
     try {
-      messages.push({
-        role: "user",
-        content: prompt,
-      });
+      messages.push({ role: "user", content: prompt });
 
       const { text } = await generateText({
         model: openai("gpt-4o"),
         prompt: `Reply to the latest message in the conversation. The conversation is: ${messages
-          .map((message) => `${message.role}: ${message.content}`)
+          .map((m) => `${m.role}: ${m.content}`)
           .join("\n")}`,
       });
 
-      messages.push({
-        role: "assistant",
-        content: text,
-      });
+      messages.push({ role: "assistant", content: text });
 
       overlayWindow?.webContents.send("generated-text", text);
     } catch (e) {
       console.error(e);
-      overlayWindow?.webContents.send("error", e);
+      overlayWindow?.webContents.send("error", String(e));
     }
   });
 });
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
@@ -200,8 +180,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
   if (BrowserWindow.getAllWindows().length === 0) {
     createMainWindow();
   }
